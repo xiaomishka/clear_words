@@ -1,3 +1,5 @@
+![Image alt](https://github.com/xiaomishka/clear_words/blob/main/Screenshot_2.png)
+
 #  clear_words
 Бесплатная кросс-платформенная программа для очистки ключевых слов по стоп словам
 
