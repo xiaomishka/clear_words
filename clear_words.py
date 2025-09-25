@@ -12,6 +12,23 @@ filtered_data = None     # Отфильтрованные данные с уче
 stop_words = set()       # Множество для хранения стоп-слов
 history = deque()        # История изменений для возможности отката
 
+
+def normalize_word(word):
+    """Приводит слово к единому виду: без пунктуации по краям и в нижнем регистре."""
+    cleaned = re.sub(r'^\W+|\W+$', '', str(word))
+    return cleaned.lower()
+
+
+def tokenize_phrase(phrase):
+    """Разбивает фразу на слова, игнорируя пунктуацию."""
+    cleaned = re.sub(r'[\W_]+', ' ', str(phrase).lower())
+    return [token for token in cleaned.split() if token]
+
+
+def push_history():
+    """Сохраняет текущее состояние стоп-слов для последующей отмены."""
+    history.append(stop_words.copy())
+
 def load_file():
     file_path = filedialog.askopenfilename(
         filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv")]
@@ -28,10 +45,25 @@ def load_file():
         return None
 
 def apply_stop_words_to_data(data, stop_words_set):
-    if not stop_words_set:
+    if not stop_words_set or data is None:
+        return data.copy() if data is not None else None
+
+    normalized_stop_words = set()
+    for word in stop_words_set:
+        normalized = normalize_word(word)
+        if normalized:
+            normalized_stop_words.add(normalized)
+    if not normalized_stop_words:
         return data.copy()
-    pattern = r'\b(' + '|'.join(map(re.escape, stop_words_set)) + r')\b'
-    return data[~data.iloc[:, 0].astype(str).str.contains(pattern, na=False, regex=True)]
+
+    if data.shape[1] == 0:
+        return data.copy()
+
+    first_column = data.iloc[:, 0].astype(str)
+    mask = ~first_column.apply(
+        lambda phrase: any(token in normalized_stop_words for token in tokenize_phrase(phrase))
+    )
+    return data[mask]
 
 def refresh_table():
     # Очистка текущего содержимого Treeview
@@ -44,24 +76,29 @@ def refresh_table():
             values = list(row)
             tree.insert("", "end", values=values)
     else:
-        tree.insert("", "end", values=["Данные отсутствуют"] + [""] * (len(all_data.columns) - 1))
+        column_count = len(tree["columns"])
+        tree.insert("", "end", values=["Данные отсутствуют"] + [""] * (column_count - 1))
 
     # Обновление количества строк
     count_label.config(text=f"Количество загруженных строк: {len(tree.get_children())}")
 
 def add_stop_word(word):
-    if word in stop_words:
+    normalized = normalize_word(word)
+    if not normalized:
+        return
+    if normalized in stop_words:
         messagebox.showinfo("Информация", f"Слово '{word}' уже в списке стоп-слов.")
         return
-    stop_words.add(word)
-    history.append(stop_words.copy())  # Сохраняем текущее состояние стоп-слов
+    push_history()
+    stop_words.add(normalized)
     update_filtered_data()
     refresh_table()
 
 def remove_stop_word(word):
-    if word in stop_words:
-        stop_words.remove(word)
-        history.append(stop_words.copy())  # Сохраняем текущее состояние стоп-слов
+    normalized = normalize_word(word)
+    if normalized in stop_words:
+        push_history()
+        stop_words.remove(normalized)
         update_filtered_data()
         refresh_table()
 
@@ -75,13 +112,12 @@ def open_word_selection(row_phrase):
     top.title("Выбор слова")
     top.geometry("300x200")
     
-    words = row_phrase.split()
-    unique_words = set(word.strip(",.!?") for word in words)
-    
+    unique_words = sorted(set(tokenize_phrase(row_phrase)))
+
     for word in unique_words:
         btn = tk.Button(
-            top, 
-            text=f"Добавить '{word}' в стоп-слова", 
+            top,
+            text=f"Добавить '{word}' в стоп-слова",
             command=lambda w=word: [add_stop_word(w), top.destroy()]
         )
         btn.pack(pady=2, fill='x', padx=10)
@@ -113,7 +149,7 @@ def undo_last_action():
     if history:
         last_state = history.pop()
         global stop_words
-        stop_words = last_state
+        stop_words = last_state.copy()
         update_filtered_data()
         refresh_table()
     else:
@@ -142,15 +178,23 @@ def load_stop_words_from_file():
     if file_path:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                words = set(line.strip() for line in f if line.strip())
-                if words:
-                    history.append(stop_words.copy())  # Сохраняем текущее состояние стоп-слов
-                    stop_words.update(words)
+                words = set()
+                for line in f:
+                    normalized = normalize_word(line)
+                    if normalized:
+                        words.add(normalized)
+                new_words = words - stop_words
+                if new_words:
+                    push_history()
+                    stop_words.update(new_words)
                     update_filtered_data()
                     refresh_table()
                     messagebox.showinfo("Успех", "Стоп-слова загружены и применены.")
                 else:
-                    messagebox.showinfo("Информация", "Файл стоп-слов пуст.")
+                    if words:
+                        messagebox.showinfo("Информация", "Новых стоп-слов не обнаружено.")
+                    else:
+                        messagebox.showinfo("Информация", "Файл стоп-слов пуст.")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось загрузить файл:\n{e}")
 
@@ -176,14 +220,23 @@ def load_data():
     global all_data, filtered_data
     all_data = load_file()
     if all_data is not None:
-        update_filtered_data()
+        if all_data.empty:
+            messagebox.showinfo("Информация", "Загруженный файл не содержит данных.")
+            filtered_data = all_data.copy()
+        else:
+            update_filtered_data()
         refresh_table()
 
 def sort_by_column(index, ascending=True):
     global filtered_data
-    if filtered_data is not None:
-        filtered_data = filtered_data.sort_values(by=filtered_data.columns[index], ascending=ascending)
-        refresh_table()
+    if filtered_data is None or filtered_data.empty:
+        messagebox.showinfo("Информация", "Нет данных для сортировки.")
+        return
+    if index >= len(filtered_data.columns):
+        messagebox.showerror("Ошибка", "Недостаточно столбцов для сортировки.")
+        return
+    filtered_data = filtered_data.sort_values(by=filtered_data.columns[index], ascending=ascending)
+    refresh_table()
 
 def sort_alphabetically():
     sort_by_column(0)
