@@ -14,13 +14,18 @@ history = deque()        # История изменений для возмож
 
 def load_file():
     file_path = filedialog.askopenfilename(
-        filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv")]
+        filetypes=[("CSV и Excel", "*.csv *.xlsx"), ("CSV files", "*.csv"), ("Excel files", "*.xlsx")]
     )
     if not file_path:
         return None
     try:
         if file_path.endswith(".csv"):
-            return pd.read_csv(file_path)
+            try:
+                # Пытаемся читать с точкой с запятой
+                return pd.read_csv(file_path, sep=';', encoding='utf-8')
+            except pd.errors.ParserError:
+                # Если не получилось — пробуем с запятой
+                return pd.read_csv(file_path, sep=',', encoding='utf-8')
         else:
             return pd.read_excel(file_path)
     except Exception as e:
