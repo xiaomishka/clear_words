@@ -412,8 +412,8 @@ def open_bukvarix_parser():
         if not seeds:
             messagebox.showinfo("Информация", "Введите хотя бы одно ключевое слово.")
             return
-        if len(seeds) > 10:
-            messagebox.showerror("Ошибка", "Можно ввести не более 10 ключевых слов (каждое с новой строки).")
+        if len(seeds) > 100:
+            messagebox.showerror("Ошибка", "Можно ввести не более 100 ключевых слов за раз (каждое с новой строки).")
             return
 
         # UX: показываем "занято"
