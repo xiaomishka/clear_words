@@ -28,6 +28,7 @@ current_group_filter = None  # None или имя группы
 groups = []               # список веток (групп)
 last_target_group = None  # последняя выбранная ветка для переноса
 current_project_path = None  # путь к открытому проекту (.kwproj)
+sort_state = {}  # состояние сортировки по колонкам: {col: asc_bool}
 
 # ===========================
 #  BUKVARIX API
@@ -453,6 +454,43 @@ def sort_by_statistics2():
 def sort_by_statistics3():
     if len(all_columns_no_group) >= 4:
         sort_by_column(3, ascending=False)
+
+
+def sort_by_tree_column(display_col_name: str):
+    """
+    Сортировка по клику на заголовок столбца в таблице.
+    Повторный клик меняет направление.
+    """
+    global filtered_data, sort_state
+    if filtered_data is None or filtered_data.empty:
+        return
+
+    asc = sort_state.get(display_col_name, True)
+    sort_state[display_col_name] = not asc
+
+    if display_col_name == "Группа":
+        key = "_group"
+    else:
+        key = display_col_name
+
+    if key not in filtered_data.columns:
+        update_view_data()
+        refresh_table()
+        return
+
+    s = filtered_data[key]
+    s_num = pd.to_numeric(s, errors="coerce")
+    if s_num.notna().sum() > 0 and s_num.isna().sum() < len(s_num):
+        filtered_data = (
+            filtered_data.assign(_tmp_sort=s_num)
+            .sort_values(by="_tmp_sort", ascending=asc, kind="mergesort")
+            .drop(columns=["_tmp_sort"])
+        )
+    else:
+        filtered_data = filtered_data.sort_values(by=key, ascending=asc, kind="mergesort")
+
+    update_view_data()
+    refresh_table()
 
 # ===========================
 #  ДЕДУПЛИКАЦИЯ
@@ -989,7 +1027,7 @@ def contact_author():
     top.title("Связаться с автором")
     top.geometry("300x200")
 
-    lbl = tk.Label(top, text="Обработка слов v2.0\nАвтор: Эльдар Ибрагимов", justify=tk.CENTER)
+    lbl = tk.Label(top, text="Обработка слов v1.2\nАвтор: Эльдар Ибрагимов", justify=tk.CENTER)
     lbl.pack(pady=10)
 
     btn_vk = tk.Button(top, text="ВК", command=lambda: webbrowser.open("https://vk.com/mr.crutch"))
@@ -1103,7 +1141,68 @@ def open_bukvarix_parser():
             })
 
             global all_data, current_search_query, current_group_filter
-            all_data = ensure_group_column(df_gui)
+
+            # Bukvarix должен ДОБАВЛЯТЬ данные в общий набор, а не заменять его.
+            if all_data is None:
+                all_data = ensure_group_column(df_gui)
+                rebuild_columns_from_data()
+            else:
+                all_data = ensure_group_column(all_data)
+
+                # 1) Находим колонку фразы (берем первую "основную")
+                phrase_col = all_columns_no_group[0] if all_columns_no_group else all_data.columns[0]
+
+                # 2) Определяем, в какие колонки писать частотности.
+                # Если в CSV уже есть: "Базовая/Точная/Очень точная частотность" — используем их.
+                # Иначе используем/создаем стандартные: "Частотность/!Частостность/[!Частостность]".
+                def _norm(s: str) -> str:
+                    s = str(s).strip().lower()
+                    s = re.sub(r"\s+", "", s)
+                    return s
+
+                def _find_existing_col(need_norm_names):
+                    for c in all_data.columns:
+                        cn = _norm(c)
+                        for need in need_norm_names:
+                            if cn == need or cn.startswith(need):
+                                return c
+                    return None
+
+                base_col = _find_existing_col(["базоваячастотность"])
+                exact_col = _find_existing_col(["точнаячастотность"])
+                very_col = _find_existing_col(["оченьточнаячастотность", "оченьточнчастотность"])
+
+                if base_col and exact_col and very_col:
+                    # Пишем в "человеческие" колонки
+                    target_base, target_exact, target_very = base_col, exact_col, very_col
+                else:
+                    # Пишем в "буквариксовые" колонки
+                    for coln in ["Частотность", "!Частостность", "[!Частостность]"]:
+                        if coln not in all_data.columns:
+                            all_data[coln] = pd.NA
+                    target_base, target_exact, target_very = "Частотность", "!Частостность", "[!Частостность]"
+
+                # 3) Формируем добавляемый блок
+                df_add = pd.DataFrame()
+                df_add[phrase_col] = df_raw["phrase"].astype(str)
+                df_add[target_base] = pd.to_numeric(df_raw["broad"], errors="coerce")
+                df_add[target_exact] = pd.to_numeric(df_raw["exact"], errors="coerce")
+                # В Bukvarix нет отдельной "очень точной", поэтому дублируем exact
+                df_add[target_very] = pd.to_numeric(df_raw["exact"], errors="coerce")
+                df_add["_group"] = ""
+
+                # 4) Выравниваем колонки, чтобы concat не создавал "мусорные" NaN-столбцы
+                for c in all_data.columns:
+                    if c not in df_add.columns:
+                        df_add[c] = pd.NA
+                for c in df_add.columns:
+                    if c not in all_data.columns:
+                        all_data[c] = pd.NA
+
+                all_data = pd.concat([all_data, df_add[all_data.columns]], ignore_index=True)
+
+                # Колонки могли расшириться — перестроим таблицу
+                rebuild_columns_from_data()
             current_search_query = ""
             current_group_filter = None
             search_var.set("")
@@ -1113,7 +1212,7 @@ def open_bukvarix_parser():
             update_filtered_data()
             refresh_table()
 
-            messagebox.showinfo("Успех", f"Загружено строк из Bukvarix: {len(df_gui)}")
+            messagebox.showinfo("Успех", f"Добавлено строк из Bukvarix: {len(df_raw)}")
             top.destroy()
 
         except Exception as e:
@@ -1234,7 +1333,7 @@ def open_project():
 # ===========================
 root = tk.Tk()
 root.title("Обработка ключевых слов")
-root.geometry("1600x780")
+root.geometry("1200x780")
 
 # Верхняя панель кнопок
 btn_frame = tk.Frame(root)
@@ -1358,7 +1457,7 @@ display_columns = ["Группа"] + all_columns_no_group  # то, что пок
 tree = ttk.Treeview(tree_frame, columns=display_columns, show='headings', selectmode="extended")
 
 for col in display_columns:
-    tree.heading(col, text=col)
+    tree.heading(col, text=col, command=lambda c=col: sort_by_tree_column(c))
     w = 170
     if col == "Группа":
         w = 120
@@ -1397,7 +1496,7 @@ def rebuild_columns_from_data():
     # Пересобираем Treeview колонки
     tree["columns"] = display_columns
     for col in display_columns:
-        tree.heading(col, text=col)
+        tree.heading(col, text=col, command=lambda c=col: sort_by_tree_column(c))
         w = 170
         if col == "Группа":
             w = 120
