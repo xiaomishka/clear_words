@@ -318,7 +318,7 @@ def contact_author():
     top.title("Связаться с автором")
     top.geometry("300x200")
 
-    lbl = tk.Label(top, text="Обработка слов v1.0\nАвтор: Эльдар Ибрагимов", justify=tk.CENTER)
+    lbl = tk.Label(top, text="Обработка слов v1.1\nАвтор: Эльдар Ибрагимов", justify=tk.CENTER)
     lbl.pack(pady=10)
 
     btn_vk = tk.Button(top, text="ВК", command=lambda: webbrowser.open("https://vk.com/mr.crutch"))
