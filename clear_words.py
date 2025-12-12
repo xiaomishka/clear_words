@@ -5,6 +5,9 @@ from tkinter import ttk
 from collections import deque
 import re
 import webbrowser
+import io
+import urllib.request
+import urllib.parse
 
 # Инициализация глобальных переменных
 all_data = None          # Все данные из файла
@@ -12,6 +15,9 @@ filtered_data = None     # Отфильтрованные данные с уче
 stop_words = set()       # Множество для хранения стоп-слов
 history = deque()        # История изменений для возможности отката
 
+
+# Bukvarix API
+BUKVARIX_API_URL_MKEYWORDS = "https://api.bukvarix.com/v1/mkeywords/"  # расширенный поиск (POST)
 def load_file():
     file_path = filedialog.askopenfilename(
         filetypes=[("CSV и Excel", "*.csv *.xlsx"), ("CSV files", "*.csv"), ("Excel files", "*.xlsx")]
@@ -202,6 +208,111 @@ def sort_by_statistics2():
 def sort_by_statistics3():
     sort_by_column(3, ascending=False) 
 
+# ---------------------------
+#  ДЕДУПЛИКАЦИЯ (удаление дублей)
+# ---------------------------
+
+def _normalize_phrase_exact(value: str) -> str:
+    # "Явные" дубли: различия в регистре/пробелах/ё
+    s = str(value).lower().replace("ё", "е").strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def _normalize_phrase_tokensort(value: str) -> str:
+    # "Неявные" дубли: игнорируем пунктуацию и порядок слов
+    s = str(value).lower().replace("ё", "е")
+    tokens = re.findall(r"[0-9a-zа-я]+", s, flags=re.IGNORECASE)
+    tokens = [t for t in tokens if t]
+    tokens.sort()
+    return " ".join(tokens)
+
+def _dedupe_keep_most_frequent(df: pd.DataFrame, key_func) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    tmp = df.copy()
+
+    # Ключ дедупликации строим по 1-му столбцу (фраза)
+    tmp["_dedupe_key"] = tmp.iloc[:, 0].astype(str).map(key_func)
+
+    # Колонка "частотности": в первую очередь ищем типовую, иначе берём 2-й столбец
+    freq_col = None
+    if "Частотность" in tmp.columns:
+        freq_col = "Частотность"
+    elif tmp.shape[1] >= 2:
+        freq_col = tmp.columns[1]
+
+    if freq_col is not None:
+        tmp["_freq1"] = pd.to_numeric(tmp[freq_col], errors="coerce").fillna(-1)
+
+    # Доп. tie-breaker: если есть 3-й столбец — учитываем его как вторую метрику
+    if tmp.shape[1] >= 3:
+        tmp["_freq2"] = pd.to_numeric(tmp.iloc[:, 2], errors="coerce").fillna(-1)
+
+    tmp["_len"] = tmp.iloc[:, 0].astype(str).str.len()
+
+    # Сортируем внутри ключа так, чтобы первой была "лучшая" строка
+    sort_cols = ["_dedupe_key"]
+    ascending = [True]
+
+    if "_freq1" in tmp.columns:
+        sort_cols.append("_freq1")
+        ascending.append(False)
+
+    if "_freq2" in tmp.columns:
+        sort_cols.append("_freq2")
+        ascending.append(False)
+
+    sort_cols.append("_len")
+    ascending.append(True)
+
+    # mergesort — стабильная сортировка (предсказуемое поведение при равенстве)
+    tmp = tmp.sort_values(by=sort_cols, ascending=ascending, kind="mergesort")
+
+    # Оставляем по одному (самому "частотному") на ключ
+    tmp = tmp.drop_duplicates(subset=["_dedupe_key"], keep="first")
+
+    # Убираем служебные колонки
+    for c in ["_dedupe_key", "_freq1", "_freq2", "_len"]:
+        if c in tmp.columns:
+            tmp = tmp.drop(columns=[c])
+
+    return tmp
+
+def remove_duplicates_exact():
+    global filtered_data
+    if filtered_data is None or filtered_data.empty:
+        messagebox.showinfo("Информация", "Нет данных для дедупликации.")
+        return
+
+    before = len(filtered_data)
+    filtered_data = _dedupe_keep_most_frequent(filtered_data, _normalize_phrase_exact)
+    after = len(filtered_data)
+    refresh_table()
+
+    messagebox.showinfo(
+        "Готово",
+        f"Удалены явные дубли: {before - after}\nОсталось строк: {after}\n\n"
+        "Правило: сравнение по фразе без учета регистра/лишних пробелов/ё."
+    )
+
+def remove_duplicates_soft():
+    global filtered_data
+    if filtered_data is None or filtered_data.empty:
+        messagebox.showinfo("Информация", "Нет данных для дедупликации.")
+        return
+
+    before = len(filtered_data)
+    filtered_data = _dedupe_keep_most_frequent(filtered_data, _normalize_phrase_tokensort)
+    after = len(filtered_data)
+    refresh_table()
+
+    messagebox.showinfo(
+        "Готово",
+        f"Удалены неявные дубли: {before - after}\nОсталось строк: {after}\n\n"
+        "Правило: игнорируется пунктуация и порядок слов (слова сортируются)."
+    )
+
 def contact_author():
     top = Toplevel(root)
     top.title("Связаться с автором")
@@ -216,6 +327,137 @@ def contact_author():
     btn_tg = tk.Button(top, text="TG", command=lambda: webbrowser.open("https://t.me/God_SMM"))
     btn_tg.pack(side=tk.RIGHT, padx=30)
 
+def _bukvarix_request_mkeywords(keywords, api_key="free", num=250, timeout_sec=45):
+    """
+    Запрос к Bukvarix API (v1/mkeywords) методом POST.
+    keywords: список строк (seed-ключи), каждая фраза с новой строки.
+    Возвращает pandas.DataFrame с колонками: phrase, words, symbols, broad, exact.
+    """
+    if not keywords:
+        raise ValueError("Список ключевых слов пуст.")
+    payload = {
+        "api_key": (api_key or "free").strip(),
+        "q": "\r\n".join(keywords),   # по документации требуется CRLF
+        "format": "csv",
+        "header": "0",                 # без заголовков — проще парсить
+        "num": str(int(num)),
+        "bom": "1",
+    }
+    data = urllib.parse.urlencode(payload).encode("utf-8")
+    req = urllib.request.Request(
+        BUKVARIX_API_URL_MKEYWORDS,
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        raise RuntimeError(f"Bukvarix вернул HTTP {e.code}: {body or e.reason}") from e
+    except Exception as e:
+        raise RuntimeError(f"Не удалось выполнить запрос к Bukvarix: {e}") from e
+
+    # CSV у Bukvarix обычно с BOM — используем utf-8-sig
+    csv_text = raw.decode("utf-8-sig", errors="replace")
+
+    df = pd.read_csv(
+        io.StringIO(csv_text),
+        sep=";",
+        header=None,
+        names=["phrase", "words", "symbols", "broad", "exact"],
+    )
+    return df
+
+def open_bukvarix_parser():
+    top = Toplevel(root)
+    top.title("Парсинг Bukvarix")
+    top.geometry("620x420")
+
+    lbl = tk.Label(
+        top,
+        text="Введите до 10 ключевых слов/фраз (каждое с новой строки):",
+        anchor="w",
+        justify=tk.LEFT,
+    )
+    lbl.pack(fill="x", padx=10, pady=(10, 5))
+
+    txt = tk.Text(top, height=12)
+    txt.pack(fill="both", expand=True, padx=10)
+
+    opts = tk.Frame(top)
+    opts.pack(fill="x", padx=10, pady=10)
+
+    tk.Label(opts, text="API key:").grid(row=0, column=0, sticky="w")
+    api_key_var = tk.StringVar(value="free")
+    api_entry = tk.Entry(opts, textvariable=api_key_var, width=25)
+    api_entry.grid(row=0, column=1, sticky="w", padx=(5, 20))
+
+    tk.Label(opts, text="Строк в отчете (num):").grid(row=0, column=2, sticky="w")
+    num_var = tk.IntVar(value=250)
+    num_spin = tk.Spinbox(opts, from_=10, to=1000000, textvariable=num_var, width=10)
+    num_spin.grid(row=0, column=3, sticky="w", padx=(5, 0))
+
+    btns = tk.Frame(top)
+    btns.pack(fill="x", padx=10, pady=(0, 10))
+
+    def _run_parse():
+        raw_input = txt.get("1.0", "end").splitlines()
+        seeds = [line.strip() for line in raw_input if line.strip()]
+        if not seeds:
+            messagebox.showinfo("Информация", "Введите хотя бы одно ключевое слово.")
+            return
+        if len(seeds) > 10:
+            messagebox.showerror("Ошибка", "Можно ввести не более 10 ключевых слов (каждое с новой строки).")
+            return
+
+        # UX: показываем "занято"
+        root.config(cursor="watch")
+        top.config(cursor="watch")
+        top.update_idletasks()
+
+        try:
+            df_raw = _bukvarix_request_mkeywords(
+                seeds,
+                api_key=api_key_var.get().strip() or "free",
+                num=num_var.get(),
+            )
+            if df_raw is None or df_raw.empty:
+                messagebox.showinfo("Результат", "Bukvarix не вернул данные по заданным ключам.")
+                return
+
+            # Приводим к формату текущего приложения (4 колонки)
+            df_gui = pd.DataFrame({
+                "Фраза": df_raw["phrase"].astype(str),
+                "Частотность": pd.to_numeric(df_raw["broad"], errors="coerce"),
+                "!Частостность": pd.to_numeric(df_raw["exact"], errors="coerce"),
+                "[!Частостность]": pd.to_numeric(df_raw["exact"], errors="coerce"),
+            })
+
+            global all_data, filtered_data
+            all_data = df_gui
+            update_filtered_data()
+            refresh_table()
+
+            messagebox.showinfo("Успех", f"Загружено строк из Bukvarix: {len(df_gui)}")
+            top.destroy()
+
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
+        finally:
+            root.config(cursor="")
+            top.config(cursor="")
+
+    btn_parse = tk.Button(btns, text="Парсить", command=_run_parse)
+    btn_parse.pack(side="left")
+
+    btn_cancel = tk.Button(btns, text="Отмена", command=top.destroy)
+    btn_cancel.pack(side="right")
 # Инициализация программы
 root = tk.Tk()
 root.title("Обработка стоп-слов")
@@ -243,8 +485,11 @@ btn_show_stop_words.grid(row=0, column=4, padx=5, pady=5)
 btn_undo = tk.Button(btn_frame, text="Назад", command=undo_last_action)
 btn_undo.grid(row=0, column=5, padx=5, pady=5)
 
-btn_sort = tk.Button(btn_frame, text="Сортировка", command=lambda: sort_menu.tk_popup(btn_sort.winfo_rootx(), btn_sort.winfo_rooty() + btn_sort.winfo_height()))
+btn_sort = tk.Button(btn_frame, text="Сортировка/Дубли", command=lambda: sort_menu.tk_popup(btn_sort.winfo_rootx(), btn_sort.winfo_rooty() + btn_sort.winfo_height()))
 btn_sort.grid(row=0, column=6, padx=5, pady=5)
+
+btn_bukvarix = tk.Button(btn_frame, text="Парсинг Bukvarix", command=open_bukvarix_parser)
+btn_bukvarix.grid(row=0, column=8, padx=5, pady=5)
 
 # Создание выпадающего меню для сортировки
 sort_menu = tk.Menu(root, tearoff=0)
@@ -252,6 +497,10 @@ sort_menu.add_command(label="По алфавиту", command=sort_alphabetically
 sort_menu.add_command(label="Частотность", command=sort_by_statistics1)
 sort_menu.add_command(label="\"!Частостность\"", command=sort_by_statistics2)
 sort_menu.add_command(label="\"[!Частостность]\"", command=sort_by_statistics3)
+
+sort_menu.add_separator()
+sort_menu.add_command(label="Удалить дубли (явные, оставить более частотный)", command=remove_duplicates_exact)
+sort_menu.add_command(label="Удалить дубли (неявные, по словам/пунктуации)", command=remove_duplicates_soft)
 
 # Создание Treeview с прокруткой
 tree_frame = tk.Frame(root)
@@ -294,6 +543,6 @@ tree.bind("<Double-1>", on_double_click)
 
 # Кнопка для связи с автором
 btn_contact = tk.Button(btn_frame, text="Связаться с автором", command=contact_author)
-btn_contact.grid(row=0, column=7, padx=5, pady=5)
+btn_contact.grid(row=0, column=9, padx=5, pady=5)
 
 root.mainloop()
