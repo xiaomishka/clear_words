@@ -1,10 +1,10 @@
 name: Clear Words — Builds
 
+# Run only by pushing tags like v1.0.0 or manually from Actions.
 on:
   push:
     tags:
       - 'v*'
-
   workflow_dispatch:
 
 permissions:
@@ -21,28 +21,34 @@ jobs:
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             asset: Clear-Words-Windows-x64
+            extension: exe
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             asset: Clear-Words-Linux-x64
+            extension: AppImage
           - os: macos-15
             target: aarch64-apple-darwin
             asset: Clear-Words-macOS-Apple-Silicon
+            extension: dmg
           - os: macos-15-intel
             target: x86_64-apple-darwin
             asset: Clear-Words-macOS-Intel
+            extension: dmg
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Linux libraries for egui and file dialogs
+      - name: Linux libraries for egui and AppImage
         if: startsWith(matrix.os, 'ubuntu-')
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             pkg-config libdbus-1-dev libxkbcommon-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libgtk-3-dev libwayland-dev libssl-dev
+            libgtk-3-dev libwayland-dev libssl-dev \
+            libfuse2 librsvg2-bin rpm
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -52,15 +58,14 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package Windows EXE
+      - name: Package Windows executable
         if: startsWith(matrix.os, 'windows-')
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/keyword-tool.exe" "dist/ClearWords.exe"
-          Compress-Archive -Path "dist/ClearWords.exe" -DestinationPath "${{ matrix.asset }}.zip" -Force
+          Copy-Item "target/${{ matrix.target }}/release/keyword-tool.exe" "dist/${{ matrix.asset }}.exe"
 
-      - name: Package Linux executable
+      - name: Package Linux AppImage
         if: startsWith(matrix.os, 'ubuntu-')
         shell: bash
         run: |
@@ -68,9 +73,47 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/keyword-tool" dist/clear-words
           chmod +x dist/clear-words
-          tar -czf "${{ matrix.asset }}.tar.gz" -C dist clear-words
 
-      - name: Package macOS app
+          # Minimal desktop icon and metadata used only for Linux packaging.
+          # Replace the icon with your own PNG later, if desired.
+          cat > dist/clear-words.svg <<'SVG'
+          <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+            <rect width="128" height="128" rx="24" fill="#172332"/>
+            <rect x="10" y="10" width="108" height="108" rx="18" fill="none" stroke="#4ea2ff" stroke-width="4"/>
+            <text x="64" y="78" font-family="sans-serif" font-size="50" font-weight="bold" fill="#ffffff" text-anchor="middle">CW</text>
+          </svg>
+          SVG
+          rsvg-convert -w 128 -h 128 dist/clear-words.svg -o dist/clear-words.png
+
+          cat > dist/clear-words.desktop <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=Clear Words
+          Exec=clear-words
+          Icon=clear-words
+          Categories=Office;Utility;
+          Terminal=false
+          DESKTOP
+
+          curl --fail --location --retry 3 \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
+            --output dist/linuxdeploy-x86_64.AppImage
+          chmod +x dist/linuxdeploy-x86_64.AppImage
+
+          # Bundle linked libraries and produce a standalone AppImage.
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          export LDAI_OUTPUT="${{ matrix.asset }}.AppImage"
+          ./dist/linuxdeploy-x86_64.AppImage \
+            --appdir dist/AppDir \
+            --executable dist/clear-words \
+            --desktop-file dist/clear-words.desktop \
+            --icon-file dist/clear-words.png \
+            --output appimage
+
+          mv "${{ matrix.asset }}.AppImage" "dist/${{ matrix.asset }}.AppImage"
+          chmod +x "dist/${{ matrix.asset }}.AppImage"
+
+      - name: Package macOS DMG
         if: startsWith(matrix.os, 'macos-')
         shell: bash
         run: |
@@ -79,28 +122,315 @@ jobs:
           mkdir -p "$APP/Contents/MacOS"
           cp "target/${{ matrix.target }}/release/keyword-tool" "$APP/Contents/MacOS/keyword-tool"
           chmod +x "$APP/Contents/MacOS/keyword-tool"
-          printf '%s\n' \
-            '<?xml version="1.0" encoding="UTF-8"?>' \
-            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-            '<plist version="1.0">' \
-            '<dict>' \
-            '<key>CFBundleExecutable</key><string>keyword-tool</string>' \
-            '<key>CFBundleIdentifier</key><string>com.clearwords.desktop</string>' \
-            '<key>CFBundleName</key><string>Clear Words</string>' \
-            '<key>CFBundleDisplayName</key><string>Clear Words</string>' \
-            '<key>CFBundlePackageType</key><string>APPL</string>' \
-            '<key>CFBundleShortVersionString</key><string>0.1.0</string>' \
-            '<key>NSHighResolutionCapable</key><true/>' \
-            '</dict>' \
-            '</plist>' > "$APP/Contents/Info.plist"
-          plutil -lint "$APP/Contents/Info.plist"
-          tar -czf "${{ matrix.asset }}.tar.gz" -C dist "Clear Words.app"
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>keyword-tool</string>
+            <key>CFBundleIdentifier</key><string>com.clearwords.desktop</string>
+            <key>CFBundleName</key><string>Clear Words</string>
+            <key>CFBundleDisplayName</key><string>Clear Words</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$APP/Contents/Info.plist"
+
+          DMG_ROOT="dist/dmg-root"
+          mkdir -p "$DMG_ROOT"
+          ditto "$APP" "$DMG_ROOT/Clear Words.app"
+          ln -s /Applications "$DMG_ROOT/Applications"
+          hdiutil create \
+            -volname "Clear Words" \
+            -srcfolder "$DMG_ROOT" \
+            -format UDZO \
+            -ov "dist/${{ matrix.asset }}.dmg"
+
+      - name: Package Linux DEB
+        if: startsWith(matrix.os, 'ubuntu-')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # A tag (v1.0.0) is the Debian package version; for manual
+          # builds use the existing application version from Cargo.toml.
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
+            PACKAGE_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            PACKAGE_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(p["version"] for p in d["packages"] if p["name"] == "keyword-tool"))')"
+          fi
+
+          PACKAGE_ROOT="dist/deb-root"
+          install -Dm755 dist/clear-words "$PACKAGE_ROOT/usr/bin/clear-words"
+          install -Dm644 dist/clear-words.desktop "$PACKAGE_ROOT/usr/share/applications/clear-words.desktop"
+          install -Dm644 dist/clear-words.png "$PACKAGE_ROOT/usr/share/icons/hicolor/128x128/apps/clear-words.png"
+          mkdir -p "$PACKAGE_ROOT/DEBIAN"
+
+          cat > "$PACKAGE_ROOT/DEBIAN/control" <<CONTROL
+          Package: clear-words
+          Version: ${PACKAGE_VERSION}
+          Architecture: amd64
+          Section: utils
+          Priority: optional
+          Maintainer: Eldar Ibragimov
+          Homepage: https://github.com/xiaomishka/clear_words
+          Depends: libc6 (>= 2.35), libgcc-s1, libdbus-1-3, libxkbcommon0, libgl1, libgtk-3-0 | libgtk-3-0t64
+          Description: Clear Words keyword cleaning desktop application
+           Import, group, analyze and clean keyword lists.
+          CONTROL
+
+          dpkg-deb --build --root-owner-group "$PACKAGE_ROOT" "dist/${{ matrix.asset }}.deb"
+          dpkg-deb --info "dist/${{ matrix.asset }}.deb"
+          dpkg-deb --contents "dist/${{ matrix.asset }}.deb"
+
+      - name: Package Linux RPM
+        if: startsWith(matrix.os, 'ubuntu-')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The already compiled Linux binary is also used for RPM.
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
+            PACKAGE_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            PACKAGE_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(p["version"] for p in d["packages"] if p["name"] == "keyword-tool"))')"
+          fi
+
+          # RPM doesn't permit '-' in its Version field: use a release suffix.
+          RPM_VERSION="${PACKAGE_VERSION%%[-+]*}"
+          RPM_RELEASE="1"
+          if [[ "$PACKAGE_VERSION" == *-* ]]; then
+            PRE="${PACKAGE_VERSION#*-}"
+            PRE="${PRE%%+*}"
+            RPM_RELEASE="0.${PRE//-/.}"
+          fi
+          if ! [[ "$RPM_VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+            echo "Unsupported RPM version: $PACKAGE_VERSION" >&2
+            exit 1
+          fi
+
+          export CW_PACKAGE_DIST="${GITHUB_WORKSPACE}/dist"
+          mkdir -p dist/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cat > dist/rpmbuild/SPECS/clear-words.spec <<SPEC
+          Name: clear-words
+          Version: ${RPM_VERSION}
+          Release: ${RPM_RELEASE}
+          Summary: Clear Words keyword cleaning desktop application
+          License: LicenseRef-Clear-Words
+          URL: https://github.com/xiaomishka/clear_words
+          BuildArch: x86_64
+          
+          %description
+          Clear Words is a desktop utility for organizing, grouping,
+          analyzing and cleaning keyword lists.
+          
+          %prep
+          
+          %build
+          
+          %install
+          install -Dm755 "\$CW_PACKAGE_DIST/clear-words" "%{buildroot}/usr/bin/clear-words"
+          install -Dm644 "\$CW_PACKAGE_DIST/clear-words.desktop" "%{buildroot}/usr/share/applications/clear-words.desktop"
+          install -Dm644 "\$CW_PACKAGE_DIST/clear-words.png" "%{buildroot}/usr/share/icons/hicolor/128x128/apps/clear-words.png"
+          
+          %files
+          %defattr(-,root,root,-)
+          /usr/bin/clear-words
+          /usr/share/applications/clear-words.desktop
+          /usr/share/icons/hicolor/128x128/apps/clear-words.png
+          SPEC
+
+          rpmbuild -bb \
+            --define "_topdir ${GITHUB_WORKSPACE}/dist/rpmbuild" \
+            dist/rpmbuild/SPECS/clear-words.spec
+
+          RPM_FILE="$(find dist/rpmbuild/RPMS -type f -name '*.rpm' -print -quit)"
+          test -n "$RPM_FILE"
+          cp "$RPM_FILE" "dist/${{ matrix.asset }}.rpm"
+          rpm -qpi "dist/${{ matrix.asset }}.rpm"
+          rpm -qlp "dist/${{ matrix.asset }}.rpm"
+
+      - name: Upload Linux RPM
+        if: startsWith(matrix.os, 'ubuntu-')
+        uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.asset }}
-          path: |
-            *.zip
-            *.tar.gz
+          path: dist/${{ matrix.asset }}.rpm
+          archive: false
+          if-no-files-found: error
+
+      # Linux offers both a portable AppImage and an installable DEB.
+      - name: Upload Linux DEB
+        if: startsWith(matrix.os, 'ubuntu-')
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/${{ matrix.asset }}.deb
+          archive: false
+          if-no-files-found: error
+
+      # Upload a single native-format file, avoiding a ZIP around it.
+      # upload-artifact@v7 supports archive: false for one file.
+      - name: Upload native package
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/${{ matrix.asset }}.${{ matrix.extension }}
+          archive: false
+          if-no-files-found: error
+
+  # These two jobs reuse the Linux .deb payload; Rust is NOT recompiled.
+  # They are kept separate so Flatpak/Snap errors do not hide the core packages.
+  flatpak:
+    name: Clear-Words-Linux-Flatpak-x64
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download Linux DEB
+        uses: actions/download-artifact@v8
+        with:
+          name: Clear-Words-Linux-x64.deb
+          path: packaging
+
+      - name: Install Flatpak tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Prepare Flatpak manifest and app assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          dpkg-deb -x packaging/Clear-Words-Linux-x64.deb packaging/unpacked
+          cp packaging/unpacked/usr/bin/clear-words packaging/clear-words
+          chmod +x packaging/clear-words
+          cp packaging/unpacked/usr/share/icons/hicolor/128x128/apps/clear-words.png packaging/io.github.xiaomishka.ClearWords.png
+          cp packaging/unpacked/usr/share/applications/clear-words.desktop packaging/io.github.xiaomishka.ClearWords.desktop
+          sed -i 's/^Icon=.*/Icon=io.github.xiaomishka.ClearWords/' packaging/io.github.xiaomishka.ClearWords.desktop
+          sed -i 's/^Exec=.*/Exec=clear-words/' packaging/io.github.xiaomishka.ClearWords.desktop
+
+          cat > io.github.xiaomishka.ClearWords.yml <<'FLATPAK'
+          app-id: io.github.xiaomishka.ClearWords
+          runtime: org.gnome.Platform
+          runtime-version: '49'
+          sdk: org.gnome.Sdk
+          command: clear-words
+          finish-args:
+            - --share=network
+            - --share=ipc
+            - --socket=wayland
+            - --socket=fallback-x11
+            - --device=dri
+            - --filesystem=home
+            - --filesystem=/media
+            - --filesystem=/run/media
+          modules:
+            - name: clear-words
+              buildsystem: simple
+              build-commands:
+                - install -Dm755 clear-words /app/bin/clear-words
+                - install -Dm644 io.github.xiaomishka.ClearWords.desktop /app/share/applications/io.github.xiaomishka.ClearWords.desktop
+                - install -Dm644 io.github.xiaomishka.ClearWords.png /app/share/icons/hicolor/128x128/apps/io.github.xiaomishka.ClearWords.png
+              sources:
+                - type: file
+                  path: packaging/clear-words
+                  dest-filename: clear-words
+                - type: file
+                  path: packaging/io.github.xiaomishka.ClearWords.desktop
+                  dest-filename: io.github.xiaomishka.ClearWords.desktop
+                - type: file
+                  path: packaging/io.github.xiaomishka.ClearWords.png
+                  dest-filename: io.github.xiaomishka.ClearWords.png
+          FLATPAK
+
+      - name: Build Flatpak bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          flatpak-builder --user --force-clean --install-deps-from=flathub \
+            --repo=dist/flatpak-repo dist/flatpak-build io.github.xiaomishka.ClearWords.yml
+          flatpak build-bundle dist/flatpak-repo \
+            dist/Clear-Words-Linux-x64.flatpak io.github.xiaomishka.ClearWords \
+            --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
+          test -s dist/Clear-Words-Linux-x64.flatpak
+
+      - name: Upload Flatpak
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/Clear-Words-Linux-x64.flatpak
+          archive: false
+          if-no-files-found: error
+
+  snap:
+    name: Clear-Words-Linux-Snap-x64
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download Linux DEB
+        uses: actions/download-artifact@v8
+        with:
+          name: Clear-Words-Linux-x64.deb
+          path: packaging
+
+      - name: Prepare Snapcraft assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p snap packaging/snap-root
+          dpkg-deb -x packaging/Clear-Words-Linux-x64.deb packaging/snap-root
+          chmod +x packaging/snap-root/usr/bin/clear-words
+
+          # Retrieve the package version from the existing DEB metadata.
+          VERSION="$(dpkg-deb -f packaging/Clear-Words-Linux-x64.deb Version)"
+          # Snapcraft version strings use a slightly more restrictive syntax.
+          if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+            echo "Unsupported snap version $VERSION; use a stable tag such as v1.0.0" >&2
+            exit 1
+          fi
+          cat > snap/snapcraft.yaml <<SNAP
+          name: clear-words
+          base: core22
+          version: '${VERSION}'
+          summary: Keyword collection and cleanup tool
+          description: |
+            Clear Words helps collect, group, analyze and clean keyword lists.
+          grade: stable
+          confinement: strict
+          apps:
+            clear-words:
+              command: usr/bin/clear-words
+              extensions: [gnome]
+              plugs:
+                - network
+                - home
+                - removable-media
+          parts:
+            clear-words:
+              plugin: dump
+              source: packaging/snap-root
+          SNAP
+
+      - name: Build Snap package
+        id: snapcraft
+        uses: snapcore/action-build@v1
+
+      - name: Rename Snap package
+        shell: bash
+        env:
+          BUILT_SNAP: ${{ steps.snapcraft.outputs.snap }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          test -f "$BUILT_SNAP"
+          cp "$BUILT_SNAP" dist/Clear-Words-Linux-x64.snap
+
+      - name: Upload Snap
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/Clear-Words-Linux-x64.snap
+          archive: false
           if-no-files-found: error
