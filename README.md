@@ -6,7 +6,7 @@
 
 Программа переписана на **Rust** с современным тёмным интерфейсом. Для работы с готовой сборкой не нужно отдельно устанавливать Python или его библиотеки.
 
-![Интерфейс Clear Words](https://raw.githubusercontent.com/xiaomishka/clear_words/main/Screenshot_2.jpg)
+![Интерфейс Clear Words](https://github.com/xiaomishka/clear_words/blob/main/Screen.png)
 
 ## Возможности
 
