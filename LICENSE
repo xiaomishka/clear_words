@@ -1,0 +1,100 @@
+Clear Words Source-Available License, Version 1.0
+
+Copyright (c) 2024–2026 Eldar Ibragimov (Эльдар Ибрагимов)
+Project: https://github.com/xiaomishka/clear_words
+
+IMPORTANT: This is a custom source-available license. It is NOT an OSI-approved
+open-source license. This text is a draft and should be reviewed by a qualified
+legal professional before publication.
+
+1. DEFINITIONS
+
+"Software" means Clear Words, including its source code, executable builds,
+modifications and derivative versions based on copyrightable portions of Clear
+Words, excluding third-party components governed by their own licenses.
+"Author" means Eldar Ibragimov, the original author of Clear Words.
+"Distribute" includes publishing, sharing, supplying or making copies of the
+Software available to other people, in source or executable form.
+
+2. PERMITTED USE
+
+Subject to this License, the Author grants you a non-exclusive, worldwide,
+royalty-free permission to:
+
+(a) download, install, run and use the Software for personal, educational,
+    research, internal business and other professional purposes;
+(b) use the Software in paid work, including SEO, marketing, consulting and
+    analytics, and sell reports, datasets, semantic keyword lists and other
+    independent results created with the Software;
+(c) inspect, modify and compile the source code for your own use;
+(d) distribute the Software and modified versions free of charge, provided
+    you comply with Section 4.
+
+No separate permission from the Author is required for ordinary commercial
+work performed USING the Software.
+
+3. PROHIBITED COMMERCIAL DISTRIBUTION
+
+Without separate written permission from the Author, you must not:
+
+(a) sell, rent, license for a fee, or charge for a copy, download, distribution
+    or use of the Software or a modified version;
+(b) place the Software behind a paywall or make payment a condition of
+    obtaining it;
+(c) sell the Software as part of a paid software bundle or product, where
+    payment is required to obtain access to the Software;
+(d) sell access to a hosted or managed service whose primary purpose is to
+    provide users with the functionality of the Software itself.
+
+This restriction does NOT prohibit payment for independent professional work
+performed with the Software (including the deliverables described in 2(b)),
+or for genuinely separate consulting, training or installation services where
+payment is not required to obtain a copy of or access to the Software.
+
+4. ATTRIBUTION AND REDISTRIBUTION
+
+Any distribution of the Software or a modified version must:
+
+(a) retain this License and the copyright notice above;
+(b) clearly credit "Clear Words — original author: Eldar Ibragimov
+    (Эльдар Ибрагимов)" in the repository or accompanying documentation,
+    and preserve the original-author credit in the application's About dialog
+    if such a dialog is included;
+(c) clearly identify any changes and refrain from presenting a modified
+    version as an official release of the Author without permission;
+(d) impose no terms on the Author's original code that conflict with this
+    License.
+
+Attribution is NOT required on reports, keyword lists, SEO deliverables or
+other results merely produced by USING the Software.
+
+5. SUGGESTIONS AND CONTRIBUTIONS
+
+Users may propose improvements, report issues and suggest fixes. Suggestions
+alone do not transfer copyright ownership. Code contributions may be merged
+only when the contributor grants the necessary rights under terms accepted
+by the project maintainer. Contributors retain rights in their own original
+work unless separately agreed otherwise.
+
+6. THIRD-PARTY SOFTWARE
+
+This License applies only to portions of Clear Words which the Author is
+entitled to license. Third-party dependencies, assets and components remain
+subject to their respective licenses and notices.
+
+7. TERMINATION
+
+Permissions under this License terminate if you violate its terms. The Author
+may separately grant additional permissions in writing. Rights already
+granted under other valid licenses, if any, are not revoked by this document.
+
+8. DISCLAIMER OF WARRANTY AND LIABILITY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTIES OF ANY KIND, TO THE
+MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW. TO THE MAXIMUM EXTENT PERMITTED
+BY APPLICABLE LAW, THE AUTHOR IS NOT LIABLE FOR DAMAGES ARISING FROM THE
+USE OR INABILITY TO USE THE SOFTWARE.
+
+For separate resale or distribution permission, contact:
+https://t.me/God_SMM
+https://vk.com/mr.crutch
