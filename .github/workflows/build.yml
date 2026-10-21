@@ -1,13 +1,11 @@
 name: Clear Words — Builds
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
     tags:
       - 'v*'
+
+  workflow_dispatch:
 
 permissions:
   contents: read
