@@ -1,0 +1,108 @@
+name: Clear Words — Builds
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            asset: Clear-Words-Windows-x64
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: Clear-Words-Linux-x64
+          - os: macos-15
+            target: aarch64-apple-darwin
+            asset: Clear-Words-macOS-Apple-Silicon
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: Clear-Words-macOS-Intel
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Linux libraries for egui and file dialogs
+        if: startsWith(matrix.os, 'ubuntu-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config libdbus-1-dev libxkbcommon-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libgtk-3-dev libwayland-dev libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package Windows EXE
+        if: startsWith(matrix.os, 'windows-')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/keyword-tool.exe" "dist/ClearWords.exe"
+          Compress-Archive -Path "dist/ClearWords.exe" -DestinationPath "${{ matrix.asset }}.zip" -Force
+
+      - name: Package Linux executable
+        if: startsWith(matrix.os, 'ubuntu-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/keyword-tool" dist/clear-words
+          chmod +x dist/clear-words
+          tar -czf "${{ matrix.asset }}.tar.gz" -C dist clear-words
+
+      - name: Package macOS app
+        if: startsWith(matrix.os, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="dist/Clear Words.app"
+          mkdir -p "$APP/Contents/MacOS"
+          cp "target/${{ matrix.target }}/release/keyword-tool" "$APP/Contents/MacOS/keyword-tool"
+          chmod +x "$APP/Contents/MacOS/keyword-tool"
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+            '<plist version="1.0">' \
+            '<dict>' \
+            '<key>CFBundleExecutable</key><string>keyword-tool</string>' \
+            '<key>CFBundleIdentifier</key><string>com.clearwords.desktop</string>' \
+            '<key>CFBundleName</key><string>Clear Words</string>' \
+            '<key>CFBundleDisplayName</key><string>Clear Words</string>' \
+            '<key>CFBundlePackageType</key><string>APPL</string>' \
+            '<key>CFBundleShortVersionString</key><string>0.1.0</string>' \
+            '<key>NSHighResolutionCapable</key><true/>' \
+            '</dict>' \
+            '</plist>' > "$APP/Contents/Info.plist"
+          plutil -lint "$APP/Contents/Info.plist"
+          tar -czf "${{ matrix.asset }}.tar.gz" -C dist "Clear Words.app"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            *.zip
+            *.tar.gz
+          if-no-files-found: error
